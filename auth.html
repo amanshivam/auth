@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenFGA Management</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    label { display: block; margin: 10px 0 5px; }
+    input, button { margin: 5px 0; }
+  </style>
+</head>
+<body>
+  <h1>OpenFGA Management</h1>
+
+  <h2>Create Schema</h2>
+  <form id="schema-form">
+    <label for="schema">Schema JSON:</label>
+    <textarea id="schema" rows="10" cols="50" required></textarea>
+    <button type="submit">Create Schema</button>
+  </form>
+
+  <h2>Create Policy</h2>
+  <form id="policy-form">
+    <label for="policy">Policy JSON:</label>
+    <textarea id="policy" rows="10" cols="50" required></textarea>
+    <button type="submit">Create Policy</button>
+  </form>
+
+  <h2>Check Access</h2>
+  <form id="access-form">
+    <label for="userId">User ID:</label>
+    <input type="text" id="userId" required>
+    <label for="type">Type:</label>
+    <input type="text" id="type" required>
+    <label for="relation">Relation:</label>
+    <input type="text" id="relation" required>
+    <label for="object">Object:</label>
+    <input type="text" id="object" required>
+    <button type="submit">Check Access</button>
+  </form>
+
+  <h3>Result</h3>
+  <pre id="result"></pre>
+
+  <script>
+    const schemaForm = document.getElementById('schema-form');
+    const policyForm = document.getElementById('policy-form');
+    const accessForm = document.getElementById('access-form');
+    const result = document.getElementById('result');
+
+    const handleResponse = (response) => {
+      result.textContent = JSON.stringify(response, null, 2);
+    };
+
+    const handleError = (error) => {
+      result.textContent = `Error: ${error.message}`;
+    };
+
+    schemaForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const schema = document.getElementById('schema').value;
+      try {
+        const response = await fetch('/create-schema', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: schema
+        });
+        const data = await response.json();
+        handleResponse(data);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+    policyForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const policy = document.getElementById('policy').value;
+      try {
+        const response = await fetch('/create-policy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: policy
+        });
+        const data = await response.json();
+        handleResponse(data);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+
+    accessForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const userId = document.getElementById('userId').value;
+      const type = document.getElementById('type').value;
+      const relation = document.getElementById('relation').value;
+      const object = document.getElementById('object').value;
+      try {
+        const response = await fetch(`/check-access?userId=${userId}&type=${type}&relation=${relation}&object=${object}`);
+        const data = await response.json();
+        handleResponse(data);
+      } catch (error) {
+        handleError(error);
+      }
+    });
+  </script>
+</body>
+</html>
