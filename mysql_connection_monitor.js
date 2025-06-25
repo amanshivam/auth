@@ -70,7 +70,7 @@ async function monitorMySQLConnections() {
         clearInterval(monitor);
         connection.end();
         console.log('\n🛑 Monitoring stopped');
-    }, 300000);
+    }, 30000000);
     
     console.log('Monitoring will continue for 5 minutes...');
     console.log('Press Ctrl+C to stop early');

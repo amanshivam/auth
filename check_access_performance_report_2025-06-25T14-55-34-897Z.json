@@ -1,0 +1,30 @@
+{
+  "testInfo": {
+    "totalRequests": 10000,
+    "concurrentRequests": 50,
+    "testDuration": "100.16",
+    "startTime": "2025-06-25T14:53:54.739Z",
+    "endTime": "2025-06-25T14:55:34.897Z"
+  },
+  "results": {
+    "totalRequests": 10000,
+    "successfulRequests": 0,
+    "failedRequests": 10000,
+    "successRate": 0,
+    "averageLatency": 443.8,
+    "minLatency": 2,
+    "maxLatency": 10041,
+    "requestsPerSecond": 99.84,
+    "latencyDistribution": {
+      "0-10ms": 4473,
+      "10-50ms": 5029,
+      "50-100ms": 22,
+      "100-500ms": 0,
+      "500ms+": 476
+    }
+  },
+  "systemMetrics": {
+    "samples": 19,
+    "averageMemory": 1375082.9473684211
+  }
+}

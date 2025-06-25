@@ -1,0 +1,121 @@
+{
+  "testInfo": {
+    "totalRequests": 10000,
+    "concurrentRequests": 50,
+    "testDuration": "10.55",
+    "startTime": "2025-06-25T16:33:52.462Z",
+    "endTime": "2025-06-25T16:34:03.013Z"
+  },
+  "results": {
+    "totalRequests": 10000,
+    "successfulRequests": 10000,
+    "failedRequests": 0,
+    "successRate": 100,
+    "averageLatency": 34.87,
+    "minLatency": 3,
+    "maxLatency": 453,
+    "requestsPerSecond": 947.87,
+    "latencyDistribution": {
+      "0-10ms": 9,
+      "10-50ms": 9293,
+      "50-100ms": 548,
+      "100-500ms": 150,
+      "500ms+": 0
+    }
+  },
+  "systemMetrics": {
+    "samples": 2,
+    "averageMemory": 285872
+  },
+  "cacheStats": {
+    "size": 50,
+    "maxSize": 50,
+    "tenants": [
+      "tenantid9486",
+      "tenantid21995",
+      "tenantid33097",
+      "tenantid13059",
+      "tenantid26917",
+      "tenantid22805",
+      "tenantid26816",
+      "tenantid17197",
+      "tenantid37965",
+      "tenantid22335",
+      "tenantid30106",
+      "tenantid3548",
+      "tenantid24877",
+      "tenantid32077",
+      "tenantid32593",
+      "tenantid28179",
+      "tenantid14700",
+      "tenantid19263",
+      "tenantid11029",
+      "tenantid34326",
+      "tenantid34931",
+      "tenantid16519",
+      "tenantid3831",
+      "tenantid40779",
+      "tenantid34399",
+      "tenantid19178",
+      "tenantid34474",
+      "tenantid2255",
+      "tenantid4495",
+      "tenantid41448",
+      "tenantid21220",
+      "tenantid22658",
+      "tenantid12387",
+      "tenantid38391",
+      "tenantid20579",
+      "tenantid17810",
+      "tenantid12111",
+      "tenantid38000",
+      "tenantid13652",
+      "tenantid3340",
+      "tenantid14202",
+      "tenantid14073",
+      "tenantid11533",
+      "tenantid25425",
+      "tenantid20820",
+      "tenantid15393",
+      "tenantid28640",
+      "tenantid8775",
+      "tenantid12386",
+      "tenantid32934"
+    ],
+    "memoryUsage": {
+      "process": {
+        "rss": 300,
+        "heapUsed": 84,
+        "heapTotal": 223,
+        "external": 2
+      },
+      "cache": {
+        "total": null,
+        "average": null
+      }
+    },
+    "lastCleanup": 1750869232508,
+    "queueStats": {
+      "totalRequests": 0,
+      "queuedRequests": 0,
+      "rejectedRequests": 0,
+      "averageWaitTime": 0,
+      "totalWaitTime": 0,
+      "queueLength": 0,
+      "running": 0,
+      "maxConcurrent": 1,
+      "maxQueueSize": 1
+    }
+  },
+  "queueStats": {
+    "totalRequests": 0,
+    "queuedRequests": 0,
+    "rejectedRequests": 0,
+    "averageWaitTime": 0,
+    "totalWaitTime": 0,
+    "queueLength": 0,
+    "running": 0,
+    "maxConcurrent": 1,
+    "maxQueueSize": 1
+  }
+}

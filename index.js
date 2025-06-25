@@ -1,104 +1,156 @@
 const express = require('express');
 const bodyParser = require('body-parser');
-const { getTenantEnforcer, getCacheStats, refreshTenantPolicies, getSharedAdapter } = require('./casbin');
+const { getTenantEnforcer, getCacheStats, refreshTenantAndNotify, getSharedAdapter, monitorMemory } = require('./casbin');
 const path = require('path');
-const axios = require('axios');
+const logger = require('./logger');
 
 const app = express();
 app.use(bodyParser.json());
 const port = process.argv[2] || 3000;
 
-// Webhook configuration
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'your-secret-key-here';
-const SERVER_ID = process.env.SERVER_ID || `server-${port}`;
+// Latency logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  const originalSend = res.send;
+  
+  res.send = function(data) {
+    const duration = Date.now() - start;
+    logger.info(`LATENCY: ${req.method} ${req.path} - ${duration}ms - ${res.statusCode} - ${req.ip}`);
+    originalSend.call(this, data);
+  };
+  
+  next();
+});
 
-// List of other servers to notify (configure this based on your deployment)
-const OTHER_SERVERS = process.env.OTHER_SERVERS ? 
-  process.env.OTHER_SERVERS.split(',').map(s => s.trim()) : 
-  []; // e.g., ['http://localhost:3001', 'http://localhost:3002']
+// Request queuing and rate limiting
+class RequestQueue {
+  constructor(maxConcurrent = 50, maxQueueSize = 1000) {
+    this.maxConcurrent = maxConcurrent;
+    this.maxQueueSize = maxQueueSize;
+    this.running = 0;
+    this.queue = [];
+    this.stats = {
+      totalRequests: 0,
+      queuedRequests: 0,
+      rejectedRequests: 0,
+      averageWaitTime: 0,
+      totalWaitTime: 0
+    };
+  }
+
+  async add(task) {
+    this.stats.totalRequests++;
+    
+    // If queue is full, reject the request
+    if (this.queue.length >= this.maxQueueSize) {
+      this.stats.rejectedRequests++;
+      throw new Error('Request queue is full. Please try again later.');
+    }
+
+    return new Promise((resolve, reject) => {
+      const queueEntry = {
+        task,
+        resolve,
+        reject,
+        timestamp: Date.now()
+      };
+
+      this.queue.push(queueEntry);
+      this.stats.queuedRequests++;
+      
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.running >= this.maxConcurrent || this.queue.length === 0) {
+      return;
+    }
+
+    this.running++;
+    const { task, resolve, reject, timestamp } = this.queue.shift();
+    
+    // Calculate wait time
+    const waitTime = Date.now() - timestamp;
+    this.stats.totalWaitTime += waitTime;
+    this.stats.averageWaitTime = this.stats.totalWaitTime / this.stats.totalRequests;
+
+    try {
+      const result = await task();
+      resolve(result);
+    } catch (error) {
+      reject(error);
+    } finally {
+      this.running--;
+      // Process next item in queue
+      setImmediate(() => this.processQueue());
+    }
+  }
+
+  getStats() {
+    return {
+      ...this.stats,
+      queueLength: this.queue.length,
+      running: this.running,
+      maxConcurrent: this.maxConcurrent,
+      maxQueueSize: this.maxQueueSize
+    };
+  }
+}
+
+// Create request queue instance
+const requestQueue = new RequestQueue(1, 1);
+
+// Rate limiting middleware
+const rateLimit = (windowMs = 60000, maxRequests = 100) => {
+  const requests = new Map();
+  
+  return (req, res, next) => {
+    const clientId = req.ip || 'unknown';
+    const now = Date.now();
+    const windowStart = now - windowMs;
+    
+    // Clean old entries
+    if (requests.has(clientId)) {
+      requests.set(clientId, requests.get(clientId).filter(timestamp => timestamp > windowStart));
+    } else {
+      requests.set(clientId, []);
+    }
+    
+    const clientRequests = requests.get(clientId);
+    
+    if (clientRequests.length >= maxRequests) {
+      return res.status(429).json({
+        error: 'Too many requests',
+        retryAfter: Math.ceil(windowMs / 1000)
+      });
+    }
+    
+    clientRequests.push(now);
+    next();
+  };
+};
+
+// Apply rate limiting to all routes
+//app.use(rateLimit(60000, 100)); // Reduced from 200 to 100 requests per minute per IP
 
 // Helper function to check for duplicates using the shared adapter
 let dbCheckEnabled = true; // Flag to enable/disable DB checks
 
-// Webhook notification function
-const notifyOtherServers = async (tenant, operation) => {
-  const payload = {
-    tenant,
-    operation,
-    serverId: SERVER_ID,
-    timestamp: new Date().toISOString(),
-    secret: WEBHOOK_SECRET
-  };
-
-  const promises = OTHER_SERVERS.map(async (serverUrl) => {
-    try {
-      await axios.post(`${serverUrl}/webhook/refresh`, payload, {
-        timeout: 5000,
-        headers: { 'Content-Type': 'application/json' }
-      });
-      console.log(`✅ Notified ${serverUrl} to refresh tenant: ${tenant}`);
-    } catch (error) {
-      console.error(`❌ Failed to notify ${serverUrl}:`, error.message);
-    }
-  });
-
-  await Promise.allSettled(promises);
-};
-
-// Webhook endpoint to receive refresh notifications
-app.post('/webhook/refresh', async (req, res) => {
-  try {
-    const { tenant, operation, serverId, secret } = req.body;
-    
-    // Verify webhook secret
-    if (secret !== WEBHOOK_SECRET) {
-      console.warn(`⚠️ Invalid webhook secret from ${serverId}`);
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    
-    // Don't refresh if this server sent the notification
-    if (serverId === SERVER_ID) {
-      return res.json({ success: true, message: 'Ignored own notification' });
-    }
-    
-    console.log(`🔄 Received refresh notification from ${serverId} for tenant: ${tenant}, operation: ${operation}`);
-    
-    // Refresh the tenant's cache
-    await refreshTenantPolicies(tenant);
-    
-    res.json({ 
-      success: true, 
-      message: `Refreshed tenant: ${tenant}`,
-      serverId: SERVER_ID 
-    });
-  } catch (error) {
-    console.error('Error processing webhook:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Health check endpoint for server discovery
+// Health check endpoint
 app.get('/health', (req, res) => {
   res.json({
-    serverId: SERVER_ID,
     port: port,
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    cacheStats: getCacheStats()
+    cacheStats: getCacheStats(),
+    queueStats: requestQueue.getStats()
   });
 });
 
-// Server discovery endpoint
-app.get('/servers', (req, res) => {
-  res.json({
-    currentServer: {
-      id: SERVER_ID,
-      port: port,
-      url: `http://localhost:${port}`
-    },
-    otherServers: OTHER_SERVERS,
-    webhookSecret: WEBHOOK_SECRET ? '***configured***' : 'not-configured'
-  });
+// Queue stats endpoint
+app.get('/queue-stats', (req, res) => {
+  res.json(requestQueue.getStats());
 });
 
 const checkDatabaseDuplicate = async (ptype, values, tenant) => {
@@ -126,13 +178,13 @@ const checkDatabaseDuplicate = async (ptype, values, tenant) => {
         const [result] = await sequelize.query(query, {
             replacements,
             type: sequelize.QueryTypes.SELECT,
-            timeout: 5000,
+            timeout: 10000, // Increased timeout
             logging: false
         });
         
         return result.count > 0;
     } catch (error) {
-        console.error('Error checking database duplicate:', error);
+        logger.error('Error checking database duplicate:', error);
         return false;
     }
 };
@@ -140,13 +192,13 @@ const checkDatabaseDuplicate = async (ptype, values, tenant) => {
 // Function to disable database checks (for load testing)
 const disableDbChecks = () => {
     dbCheckEnabled = false;
-    console.log('Database duplicate checks disabled for load testing');
+    logger.info('Database duplicate checks disabled for load testing');
 };
 
 // Function to enable database checks (for normal operation)
 const enableDbChecks = () => {
     dbCheckEnabled = true;
-    console.log('Database duplicate checks enabled');
+    logger.info('Database duplicate checks enabled');
 };
 
 // API to Create User Group
@@ -158,11 +210,7 @@ app.post('/create-group', async (req, res) => {
         const existingGroup = await checkDatabaseDuplicate('g', [groupName, groupName], tenant);
         
         if (existingGroup) {
-            res.status(400).json({ 
-                success: false, 
-                message: `Group '${groupName}' already exists in tenant '${tenant}'` 
-            });
-            return;
+            throw new Error(`Group '${groupName}' already exists in tenant '${tenant}'`);
         }
         
         const enforcer = await getTenantEnforcer(tenant);
@@ -170,15 +218,12 @@ app.post('/create-group', async (req, res) => {
         // In Casbin, roles/groups are just strings; no explicit creation is needed.
         // Optionally, you could track group metadata in a separate table if needed.
         
-        // Immediately refresh the tenant's enforcer cache to prevent duplicates
-        await refreshTenantPolicies(tenant);
-        
-        // Notify other servers to refresh
-        await notifyOtherServers(tenant, 'create-group');
+        // Refresh tenant and notify other servers via Redis
+        await refreshTenantAndNotify(tenant, 'create-group');
         
         res.json({ success: true, message: `Group '${groupName}' is ready to use in tenant '${tenant}'.` });
     } catch (error) {
-        console.error('Error creating group:', error);
+        logger.error('Error creating group:', error);
         
         // Handle database constraint violations
         if (error.message && error.message.includes('unique_grouping')) {
@@ -201,25 +246,18 @@ app.post('/add-permission', async (req, res) => {
         const existingPolicy = await checkDatabaseDuplicate('p', [role, obj, act], tenant);
         
         if (existingPolicy) {
-            res.status(400).json({ 
-                success: false, 
-                message: `Permission for role '${role}' on '${obj}:${act}' already exists in tenant '${tenant}'` 
-            });
-            return;
+            throw new Error(`Permission for role '${role}' on '${obj}:${act}' already exists in tenant '${tenant}'`);
         }
         
         const enforcer = await getTenantEnforcer(tenant);
         const added = await enforcer.addPolicy(role, obj, act, tenant);
         
-        // Immediately refresh the tenant's enforcer cache to prevent duplicates
-        await refreshTenantPolicies(tenant);
-        
-        // Notify other servers to refresh
-        await notifyOtherServers(tenant, 'add-permission');
+        // Refresh tenant and notify other servers via Redis
+        await refreshTenantAndNotify(tenant, 'add-permission');
         
         res.json({ success: added });
     } catch (error) {
-        console.error('Error adding permission:', error);
+        logger.error('Error adding permission:', error);
         
         // Handle database constraint violations
         if (error.message && error.message.includes('unique_policy')) {
@@ -242,11 +280,7 @@ app.post('/assign-user', async (req, res) => {
         const existingAssignment = await checkDatabaseDuplicate('g', [userId, groupName], tenant);
         
         if (existingAssignment) {
-            res.status(400).json({ 
-                success: false, 
-                message: `User '${userId}' is already assigned to group '${groupName}' in tenant '${tenant}'` 
-            });
-            return;
+            throw new Error(`User '${userId}' is already assigned to group '${groupName}' in tenant '${tenant}'`);
         }
         
         const enforcer = await getTenantEnforcer(tenant);
@@ -254,15 +288,12 @@ app.post('/assign-user', async (req, res) => {
         // Directly assign user to group (role) in Casbin
         const assigned = await enforcer.addGroupingPolicy(userId, groupName, tenant);
         
-        // Immediately refresh the tenant's enforcer cache to prevent duplicates
-        await refreshTenantPolicies(tenant);
-        
-        // Notify other servers to refresh
-        await notifyOtherServers(tenant, 'assign-user');
+        // Refresh tenant and notify other servers via Redis
+        await refreshTenantAndNotify(tenant, 'assign-user');
         
         res.json({ success: assigned });
     } catch (error) {
-        console.error('Error assigning user:', error);
+        logger.error('Error assigning user:', error);
         
         // Handle database constraint violations
         if (error.message && error.message.includes('unique_grouping')) {
@@ -282,11 +313,11 @@ app.post('/check-access', async (req, res) => {
     
     try {
         const enforcer = await getTenantEnforcer(tenant);
-        console.log(`loaded enforcer for ${tenant} ${enforcer}`);
+        logger.info(`loaded enforcer for ${tenant} ${enforcer}`);
         const allowed = await enforcer.enforce(userId, obj, act, tenant);
         res.json({ allowed });
     } catch (error) {
-        console.error('Error checking access:', error);
+        logger.error('Error checking access:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -300,14 +331,26 @@ app.post('/getUserPolicies', async (req, res) => {
         const userPolicies = await enforcer.getRolesForUser(userId, tenant);
         res.json({ policies: userPolicies });
     } catch (error) {
-        console.error('Error getting user policies:', error);
+        logger.error('Error getting user policies:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
 // API to Get Cache Statistics
 app.get('/cache-stats', (req, res) => {
-    res.json(getCacheStats());
+    res.json({
+        ...getCacheStats(),
+        queueStats: requestQueue.getStats()
+    });
+});
+
+// API to Get Memory Statistics
+app.get('/memory-stats', (req, res) => {
+    const memoryInfo = monitorMemory();
+    res.json({
+        ...memoryInfo,
+        queueStats: requestQueue.getStats()
+    });
 });
 
 // API to control database checks (for load testing)
@@ -326,10 +369,10 @@ app.post('/refresh-tenant', async (req, res) => {
     const { tenant } = req.body;
     
     try {
-        await refreshTenantPolicies(tenant);
+        await refreshTenantAndNotify(tenant, 'refresh-tenant');
         res.json({ success: true, message: `Refreshed policies for tenant: ${tenant}` });
     } catch (error) {
-        console.error('Error refreshing tenant:', error);
+        logger.error('Error refreshing tenant:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -349,9 +392,20 @@ app.get('/tenant-policies/:tenant', async (req, res) => {
             groupingPolicies
         });
     } catch (error) {
-        console.error('Error getting tenant policies:', error);
+        logger.error('Error getting tenant policies:', error);
         res.status(500).json({ error: error.message });
     }
+});
+
+// API to Get Redis Status
+app.get('/redis-status', (req, res) => {
+    const { getRedisManager } = require('./redis');
+    const redisManager = getRedisManager();
+    const status = redisManager.getStatus();
+    res.json({
+        redis: status,
+        timestamp: new Date().toISOString()
+    });
 });
 
 app.get('/', async (req, res) => {
@@ -364,6 +418,13 @@ app.get('/', async (req, res) => {
 
 // Start Server
 app.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}`);
-    console.log('Tenant-based RBAC system with LRU cache initialized');
+    logger.info(`Server running on http://localhost:${port}`);
+    logger.info('Tenant-based RBAC system with LRU cache and request queuing initialized');
+    logger.info(`Request queue configured: max ${requestQueue.maxConcurrent} concurrent, max ${requestQueue.maxQueueSize} queued`);
 });
+
+// Export for use in other modules
+module.exports = {
+    app,
+    requestQueue
+};
