@@ -16,7 +16,7 @@ const CONFIG = {
     // Test data configuration - start small for testing
     tenants: {
         count: 100000,            // Start with 1000 tenants for testing
-        startId: 1,
+        startId: 76875,
         prefix: 'tenantid'
     },
     
